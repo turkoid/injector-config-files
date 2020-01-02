@@ -1,0 +1,17 @@
+stages:
+  - build
+
+variables:
+  VERSION: 1.0.0
+
+bundles:
+  stage: build
+  image: alpine:latest
+  only:
+    - master
+  before_script:
+    - apk add zip
+  script:
+    - echo $VERSION
+  variables:
+    INJECTOR_ARCHIVE: injector-$VERSION+$CI_PIPELINE_IID.win64.zip
