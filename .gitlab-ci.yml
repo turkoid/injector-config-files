@@ -1,18 +1,135 @@
 stages:
-  - build
+  - release
+  - deploy
 
-variables:
-  VERSION: 1.0.0
+variables: &global_variables
+  GITHUB_API_URL: https://api.github.com
+  GITLAB_API_URL: https://gitlab.com/api/v4
+  INJECTOR_PROJECT_ID: 16080289
+  INJECTOR_CONFIG_PROJECT_ID: 16080290
 
-build:
-  stage: build
+.get_latest_release: &get_latest_release
+  - |
+    # Retrieve latest Injector release
+    #
+    url=$GITHUB_API_URL/repos/turkoid/Injector/releases/latest
+    headers='-H "Accept: application/vnd.github.v3+json"'
+    opts='-s -w "%{http_code}" -o latest_release_response'
+    echo curl $opts $headers $url
+    rc=$(eval curl $opts $headers $url)
+    echo http_code=$rc
+    if [ $rc -ne 200 ]; then
+      cat response | jq .
+      return 1
+    fi
+
+.download_release: &download_release
+  - |
+    # Download release by tag
+    #
+    opts='-s -w "%{http_code}" -o injector.zip -L'
+    echo curl $opts $download_url
+    rc=$(eval curl $opts $download_url)
+    echo http_code=$rc
+    if [ $rc -ne 200 ]; then
+      echo Not found
+      return 1
+    fi
+
+.build_bundled_releases: &build_bundled_releases
+  - |
+    # Build bundled release with config files
+    #
+    ls -1d -- */ | while read app; do
+      app=${app::-1}
+      if [ -n "$(ls "$app"/*.ini 2>/dev/null)" ]; then
+        archive_name="injector-$app-${release_tag:1}-win64.zip"
+        cp injector.zip "$archive_name"
+        zip -j "$archive_name" "$app"/*.ini
+        echo Built $archive_name
+      else
+        echo Skipping $app
+      fi
+    done
+
+.release:
   image: alpine:latest
-  only:
-    - pipelines
+  stage: release
   before_script:
+    - apk update
     - apk add zip curl jq
+  variables: &release_variables
+    <<: *global_variables
+  artifacts:
+    paths:
+      - injector-*.zip
+    expire_in: 1 week
+
+latest_release:
+  extends: .release
+  only:
+    - master
+  except:
+    - pipelines
+    - triggers
   script:
-    - echo $INJECTOR_RELEASE_TAG
-    - echo $INJECTOR_ARCHIVE_NAME
+    - *get_latest_release
+    - release_tag=$(cat latest_release_response | jq -r '.tag_name // empty')
+    - "download_url=https://github.com/turkoid/Injector/releases/download/$release_tag/injector-${release_tag:1}-win64.zip"
+    - *download_release
+    - *build_bundled_releases
+
+targeted_release:
+  extends: .release
+  only:
+    variables:
+      - $CI_COMMIT_TAG =~ /v\d+\.\d+\.\d+/
+  except:
+    - pipelines
+    - triggers
+  script:
+    - release_tag=$CI_COMMIT_TAG
+    - "download_url=https://github.com/turkoid/Injector/releases/download/$release_tag/injector-${release_tag:1}-win64.zip"
+    - *download_release
+    - *build_bundled_releases
+
+triggered_release:
+  extends: .release
+  only:
+    refs:
+      - pipelines
+      - triggers
+    variables:
+      - $INJECTOR_RELEASE_TAG
+  script:
+    - release_tag=$INJECTOR_RELEASE_TAG
+    - "download_url=$GITLAB_API_URL/projects/$INJECTOR_PROJECT_ID/jobs/artifacts/$release_tag/raw/injector-${release_tag:1}-win64.zip?job=release"
+    - *download_release
+    - *build_bundled_releases
   variables:
-    GITHUB_API_URL: https://api.github.com
+    <<: *release_variables
+
+deploy:
+  image: alpine:latest
+  stage: deploy
+  only:
+    - master
+    - /v\d+\.\d+\.\d+/
+    - pipelines
+    - triggers
+  except:
+    - branches
+  script:
+    - |
+      # Bundled archives
+      #
+      ls -1 -- injector-*.zip | while read bundle; do
+        echo "download: $GITLAB_API_URL/projects/$INJECTOR_CONFIG_PROJECT_ID/jobs/artifacts/$CI_COMMIT_REF_NAME/raw/$bundle?job=deploy"
+      done
+  artifacts:
+    paths:
+      - injector-*.zip
+    expire_in: 1 week
+  variables:
+    <<: *global_variables
+    GIT_STRATEGY: none
