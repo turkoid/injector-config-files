@@ -1,6 +1,5 @@
 stages:
   - release
-  - deploy
 
 variables: &global_variables
   GITHUB_API_URL: https://api.github.com
@@ -46,7 +45,7 @@ variables: &global_variables
         archive_name="injector-$app-${release_tag:1}-win64.zip"
         cp injector.zip "$archive_name"
         zip -j "$archive_name" "$app"/*.ini
-        echo Built $archive_name
+        echo "download: $GITLAB_API_URL/projects/$INJECTOR_CONFIG_PROJECT_ID/jobs/artifacts/$CI_COMMIT_REF_NAME/raw/$bundle?job=$CI_JOB_NAME"
       else
         echo Skipping $app
       fi
@@ -108,28 +107,3 @@ triggered_release:
     - *build_bundled_releases
   variables:
     <<: *release_variables
-
-deploy:
-  image: alpine:latest
-  stage: deploy
-  only:
-    - master
-    - /v\d+\.\d+\.\d+/
-    - pipelines
-    - triggers
-  except:
-    - branches
-  script:
-    - |
-      # Bundled archives
-      #
-      ls -1 -- injector-*.zip | while read bundle; do
-        echo "download: $GITLAB_API_URL/projects/$INJECTOR_CONFIG_PROJECT_ID/jobs/artifacts/$CI_COMMIT_REF_NAME/raw/$bundle?job=deploy"
-      done
-  artifacts:
-    paths:
-      - injector-*.zip
-    expire_in: 1 week
-  variables:
-    <<: *global_variables
-    GIT_STRATEGY: none
